@@ -3,3 +3,6 @@ __pycache__/
 .pytest_cache/
 .venv/
 .env
+.llm-model-catalog.json
+.platform-env-injection.txt
+.llm-provider-api-contract.txt

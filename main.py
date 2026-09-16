@@ -1,7 +1,8 @@
 """Telecom Network Incident Triage and Resolution Coordinator demo agent.
 
-This service implements the WSO2 Agent Manager Chat Agent contract. It deliberately
-uses deterministic mock data and never performs production-network actions.
+The Agent Manager Chat Agent implementation selects de-identified mock evidence
+deterministically, then uses a configurable OpenAI-compatible LLM to write a
+contextual, read-only advisory. It never invokes production telecom systems.
 """
 
 from __future__ import annotations
@@ -12,14 +13,18 @@ from typing import Any
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
-from incident_engine import answer
+from llm_triage import LLMSettings, TelecomLLMTriage
 from mock_data import public_scenarios
 
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
+triage = TelecomLLMTriage()
 
 app = FastAPI(
     title="Telecom Network Incident Triage Agent",
-    description="Read-only mock telecom incident correlation service for Agent Manager.",
+    description=(
+        "Read-only mock telecom incident correlation service for Agent Manager. "
+        "Responses are model-synthesized from de-identified scenario data."
+    ),
     version=APP_VERSION,
 )
 
@@ -39,9 +44,14 @@ class ChatResponse(BaseModel):
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    """Return a non-sensitive readiness response."""
-    return {"status": "ok", "agent": "telecom-incident-triage", "version": APP_VERSION}
+def health() -> dict[str, Any]:
+    """Return readiness and non-sensitive model configuration metadata."""
+    return {
+        "status": "ok",
+        "agent": "telecom-incident-triage",
+        "version": APP_VERSION,
+        "llm": triage.public_status(),
+    }
 
 
 @app.get("/scenarios")
@@ -50,10 +60,23 @@ def scenarios() -> dict[str, Any]:
     return {"simulation": True, "read_only": True, "scenarios": public_scenarios()}
 
 
+@app.get("/status")
+def status() -> dict[str, Any]:
+    """Expose configuration status without exposing credentials or prompts."""
+    return {
+        "simulation": True,
+        "read_only": True,
+        "llm": triage.public_status(),
+        "providers": ["gemini", "openai", "anthropic", "glm"],
+        "history": "bounded in-memory history is retained per session_id",
+    }
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
-    """Create a grounded, read-only incident triage briefing."""
-    return ChatResponse(response=answer(request.message, request.context))
+    """Create a grounded, model-synthesized, read-only incident advisory."""
+    response = triage.answer(request.message, request.context, request.session_id)
+    return ChatResponse(response=response)
 
 
 if __name__ == "__main__":

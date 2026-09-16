@@ -1,0 +1,31 @@
+[
+  {
+    "name": "LLM_PROVIDER",
+    "value": "gemini"
+  },
+  {
+    "name": "LLM_MODEL",
+    "value": "gemini-3-flash-preview"
+  },
+  {
+    "name": "LLM_PROVIDER_URL",
+    "value": "https://api.manus.im/api/llm-proxy/v1"
+  },
+  {
+    "name": "LLM_MAX_TOKENS",
+    "value": "900"
+  },
+  {
+    "name": "LLM_HISTORY_MESSAGES",
+    "value": "6"
+  },
+  {
+    "name": "LLM_PROVIDER_KEY",
+    "valueFrom": {
+      "secretKeyRef": {
+        "name": "telecom-triage-llm-provider",
+        "key": "api_key"
+      }
+    }
+  }
+]

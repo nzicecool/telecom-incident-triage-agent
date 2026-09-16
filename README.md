@@ -1,71 +1,56 @@
-# Telecom Network Incident Triage and Resolution Coordinator
+# Telecom Network Incident Triage Agent
 
-This repository contains a **read-only, deterministic demonstration agent** for WSO2 Agent Manager. It simulates a Network Operations Center (NOC) workflow: the agent correlates telecom alarms, service topology, change context, historical incidents, and a runbook to create an operator-ready incident brief.
+This is a **read-only, mock-data-driven** telecom incident triage agent deployed to WSO2 Agent Manager. It accepts the standard Chat Agent contract and generates contextual incident advisories from de-identified mock scenarios.
 
-The agent exposes the WSO2 Agent Manager **Chat Agent** contract on port `8000`:
+## Model-backed response design
 
-```text
-POST /chat
+Version 0.2.0 adds model-backed response synthesis. The service selects the applicable mock incident deterministically, gives only that evidence to the configured LLM, and asks the model to create a contextual advisory. This replaces static preformatted answers while preserving deterministic evidence selection and explicit operational guardrails.
+
+The default runtime model is **Google Gemini** (`gemini-3-flash-preview`). The client uses the OpenAI-compatible Chat Completions protocol and is configurable for **Gemini, Anthropic, OpenAI, or GLM-compatible** endpoints through runtime variables; no source-code change is needed to switch provider or model.
+
+| Environment variable | Default | Purpose |
+| --- | --- | --- |
+| `LLM_PROVIDER` | `gemini` | Informational provider label shown by `/health` and `/status`. |
+| `LLM_MODEL` | `gemini-3-flash-preview` | Model identifier to invoke. |
+| `LLM_PROVIDER_URL` | `OPENAI_API_BASE` | Platform-managed OpenAI-compatible endpoint. |
+| `LLM_PROVIDER_KEY` | `OPENAI_API_KEY` | Platform-managed credential; never logged or committed. |
+| `LLM_MAX_TOKENS` | `900` | Visible response token budget, bounded from 128 to 2048. |
+| `LLM_HISTORY_MESSAGES` | `6` | Bounded per-session in-memory context. |
+
+For a production platform-hosted Agent Manager deployment, attach a governed LLM service provider. Agent Manager injects `LLM_PROVIDER_URL` and `LLM_PROVIDER_KEY` at runtime. This local Quick Start uses a Kubernetes secret for equivalent secure runtime injection. The actual upstream credential is never included in source code, logs, API responses, or this repository.
+
+## Endpoints
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /health` | Readiness plus safe LLM configuration metadata. |
+| `GET /status` | Provider/model, bounded-history, and fallback status. |
+| `GET /scenarios` | De-identified mock scenario catalogue. |
+| `POST /chat` | Model-synthesized, evidence-grounded incident advisory. |
+
+### Chat request
+
+```json
 {
-  "message": "Triage the fiber aggregation loss",
-  "session_id": "optional-session-id",
-  "context": {"scenario_id": "optional-scenario-id"}
+  "message": "Compare the likely causes for the fiber aggregation loss.",
+  "session_id": "operator-demo-001",
+  "context": {"scenario_id": "fiber-aggregation-loss"}
 }
 ```
 
-The response is:
-
-```json
-{"response": "...incident briefing..."}
-```
-
-## Demonstration data
-
-All organizations, services, alarms, timestamps, and incident identifiers are mock and de-identified. The available scenarios are:
-
-| Scenario ID | Incident | Expected focus |
-|---|---|---|
-| `fiber-aggregation-loss` | Optical and transport loss at a metro aggregation point | Service impact, likely fiber impairment, outside-plant dispatch recommendation |
-| `mobile-ran-congestion` | Event-driven 5G radio congestion | Capacity-risk evidence and engineer-controlled mitigation assessment |
-| `enterprise-sdwan-latency` | Latency and packet loss on a cloud interconnect | Premium SLA risk and approved traffic-balancing assessment |
-
-Send `help`, `list scenarios`, or `show mock data` to retrieve the in-agent scenario guide. The service also provides `GET /scenarios` and `GET /health` endpoints for deployment validation.
+The model receives the selected mock scenario and bounded recent history for the supplied `session_id`. It receives neither tool access nor credentials to telecom systems. If the model endpoint is unavailable, the agent returns the existing deterministic mock-data advisory so a safe response remains available.
 
 ## Safety boundary
 
-This agent is intentionally advisory only. It **does not** execute network commands, alter routing, create or close tickets, reserve inventory, send customer communications, or make contractual commitments. Every report identifies the approval gates required before such actions can happen.
+The agent does **not** execute network commands, alter routing, create or close tickets, reserve inventory, send customer communications, or make contractual commitments. It only recommends operator-controlled next steps and names approval gates. All scenarios and related telemetry are synthetic demonstration data.
 
-## Local run
-
-```bash
-python -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-uvicorn main:app --host 0.0.0.0 --port 8000
-```
-
-Then open `http://localhost:8000/docs`, or make a request:
+## Local verification
 
 ```bash
-curl -sS http://localhost:8000/chat \
-  -H 'content-type: application/json' \
-  -d '{"message":"Triage the fiber aggregation loss"}'
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/pytest -q
+LLM_PROVIDER=gemini LLM_MODEL=gemini-3-flash-preview \
+  OPENAI_API_BASE="$OPENAI_API_BASE" OPENAI_API_KEY="$OPENAI_API_KEY" \
+  .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
 ```
-
-## WSO2 Agent Manager deployment settings
-
-Create a **Platform-Hosted Agent** from source code and provide the following values:
-
-| Setting | Value |
-|---|---|
-| Repository | This repository |
-| Branch | `main` |
-| Project Path | `/` |
-| Build Type | Python |
-| Start Command | `uvicorn main:app --host 0.0.0.0 --port 8000` |
-| Python Version | 3.11 |
-| Agent Type | Chat Agent |
-| Port | 8000 |
-| Auto instrumentation | Enabled when an AMP-compatible Python 3.11 instrumentation image is available |
-
-Use the Agent Manager Test view after deployment with `Triage the fiber aggregation loss`. The expected report contains `SIM-SP-2026-0916-017`, `AGG-BKK-17`, a service-impact list, root-cause hypotheses, an unsubmitted ticket draft, and the explicit read-only safety boundary.
