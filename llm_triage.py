@@ -337,14 +337,12 @@ class TelecomLLMTriage:
     def _get_openai_client(self) -> OpenAI:
         if self._openai_client is None:
             if os.getenv("LLM_PROVIDER_AUTH_STYLE", "").lower() == "api-key":
-                # The Agent Manager model binding supplies LLM_PROVIDER_KEY to
-                # the gateway for its upstream provider. The calling agent must
-                # instead supply its scoped model-configuration gateway key.
-                gateway_key = os.getenv("LLM_GATEWAY_API_KEY") or self.settings.api_key or ""
+                # Platform-hosted agents receive a per-binding gateway key in
+                # LLM_PROVIDER_KEY. The managed gateway expects it in API-Key.
                 self._openai_client = OpenAI(
                     api_key="",
                     base_url=self.settings.base_url,
-                    default_headers={"X-API-Key": gateway_key, "Authorization": ""},
+                    default_headers={"API-Key": self.settings.api_key or "", "Authorization": ""},
                 )
             else:
                 self._openai_client = OpenAI(api_key=self.settings.api_key, base_url=self.settings.base_url)
