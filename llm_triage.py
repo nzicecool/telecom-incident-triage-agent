@@ -31,6 +31,7 @@ from anthropic import (
 )
 from openai import APIConnectionError, APIError, AuthenticationError, OpenAI, RateLimitError
 
+from finops_runtime import FinOpsRuntime, anthropic_usage, estimate_tokens, openai_usage
 from incident_engine import (
     ScenarioNotFound,
     build_triage_report,
@@ -196,6 +197,7 @@ class TelecomLLMTriage:
         self.history = SessionHistory(self.settings.history_messages)
         self._openai_client: OpenAI | None = None
         self._anthropic_client: Anthropic | None = None
+        self.finops = FinOpsRuntime("telco-incident-triage")
 
     def public_status(self) -> dict[str, Any]:
         return self.settings.public_status()
@@ -281,6 +283,11 @@ class TelecomLLMTriage:
         messages: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
         messages.extend(self.history.messages(session_id))
         messages.append({"role": "user", "content": user_message})
+        preflight = self.finops.preflight(
+            self.settings.model, estimate_tokens(messages), self.settings.max_tokens
+        )
+        if not preflight.allowed:
+            raise ModelUnavailable(preflight.reason)
         try:
             completion = self._get_openai_client().chat.completions.create(
                 model=self.settings.model,
@@ -291,6 +298,7 @@ class TelecomLLMTriage:
             raise ModelUnavailable("Model request unavailable") from exc
         except Exception as exc:  # Defensive boundary for provider-specific SDK errors.
             raise ModelUnavailable("Model request failed") from exc
+        self.finops.record_usage(preflight.request_id, self.settings.model, *openai_usage(completion))
 
         text = completion.choices[0].message.content if completion.choices else None
         return _require_text(text)
@@ -298,6 +306,11 @@ class TelecomLLMTriage:
     def _generate_anthropic(self, user_message: str, session_id: str | None) -> str:
         messages = self.history.messages(session_id)
         messages.append({"role": "user", "content": user_message})
+        preflight = self.finops.preflight(
+            self.settings.model, estimate_tokens(messages), self.settings.max_tokens
+        )
+        if not preflight.allowed:
+            raise ModelUnavailable(preflight.reason)
         try:
             completion = self._get_anthropic_client().messages.create(
                 model=self.settings.model,
@@ -314,6 +327,7 @@ class TelecomLLMTriage:
             raise ModelUnavailable("Model request unavailable") from exc
         except Exception as exc:  # Defensive boundary for provider-specific SDK errors.
             raise ModelUnavailable("Model request failed") from exc
+        self.finops.record_usage(preflight.request_id, self.settings.model, *anthropic_usage(completion))
 
         text = "".join(
             block.text for block in completion.content if getattr(block, "type", "") == "text"
@@ -322,7 +336,14 @@ class TelecomLLMTriage:
 
     def _get_openai_client(self) -> OpenAI:
         if self._openai_client is None:
-            self._openai_client = OpenAI(api_key=self.settings.api_key, base_url=self.settings.base_url)
+            if os.getenv("LLM_PROVIDER_AUTH_STYLE", "").lower() == "api-key":
+                self._openai_client = OpenAI(
+                    api_key="",
+                    base_url=self.settings.base_url,
+                    default_headers={"API-Key": self.settings.api_key or "", "Authorization": ""},
+                )
+            else:
+                self._openai_client = OpenAI(api_key=self.settings.api_key, base_url=self.settings.base_url)
         return self._openai_client
 
     def _get_anthropic_client(self) -> Anthropic:
