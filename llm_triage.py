@@ -340,7 +340,7 @@ class TelecomLLMTriage:
                 self._openai_client = OpenAI(
                     api_key="",
                     base_url=self.settings.base_url,
-                    default_headers={"API-Key": self.settings.api_key or "", "Authorization": ""},
+                    default_headers={"X-API-Key": self.settings.api_key or "", "Authorization": ""},
                 )
             else:
                 self._openai_client = OpenAI(api_key=self.settings.api_key, base_url=self.settings.base_url)
