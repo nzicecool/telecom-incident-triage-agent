@@ -7,11 +7,17 @@ this module deliberately contains no credential logging or persistence.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 from urllib.parse import quote
 
 import httpx
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind, Status, StatusCode
+
+
+TRACER_NAME = "telecom-incident-triage.gemini"
 
 
 class GeminiNativeError(RuntimeError):
@@ -57,26 +63,60 @@ def generate_content(
         "contents": contents,
         "generationConfig": {"maxOutputTokens": max_tokens},
     }
-    try:
-        response = httpx.post(
-            endpoint,
-            json=payload,
-            headers={"Content-Type": "application/json", "API-Key": api_key},
-            timeout=45.0,
-        )
-        response.raise_for_status()
-        data = response.json()
-    except (httpx.HTTPError, ValueError, TypeError) as exc:
-        raise GeminiNativeError("Gemini native request unavailable") from exc
+    tracer = trace.get_tracer(TRACER_NAME)
+    with tracer.start_as_current_span(f"chat {model}", kind=SpanKind.CLIENT) as span:
+        # These attributes let Agent Manager classify this raw HTTPX request as
+        # an LLM span, while intentionally excluding the endpoint and API key.
+        span.set_attribute("gen_ai.operation.name", "chat")
+        span.set_attribute("gen_ai.system", "gemini")
+        span.set_attribute("gen_ai.provider.name", "gemini")
+        span.set_attribute("gen_ai.request.model", model)
+        span.set_attribute("gen_ai.input.messages", _trace_messages(messages))
+        try:
+            response = httpx.post(
+                endpoint,
+                json=payload,
+                headers={"Content-Type": "application/json", "API-Key": api_key},
+                timeout=45.0,
+            )
+            response.raise_for_status()
+            data = response.json()
+            text = _response_text(data)
+        except (httpx.HTTPError, ValueError, TypeError) as exc:
+            span.record_exception(exc)
+            span.set_status(Status(StatusCode.ERROR, "Gemini native request failed"))
+            span.set_attribute("error.type", type(exc).__name__)
+            raise GeminiNativeError("Gemini native request unavailable") from exc
 
-    text = _response_text(data)
-    usage = data.get("usageMetadata") if isinstance(data, dict) else None
-    if not isinstance(usage, dict):
-        usage = {}
-    return (
-        text,
-        _as_nonnegative_int(usage.get("promptTokenCount")),
-        _as_nonnegative_int(usage.get("candidatesTokenCount")),
+        usage = data.get("usageMetadata") if isinstance(data, dict) else None
+        if not isinstance(usage, dict):
+            usage = {}
+        input_tokens = _as_nonnegative_int(usage.get("promptTokenCount"))
+        output_tokens = _as_nonnegative_int(usage.get("candidatesTokenCount"))
+        span.set_attribute("gen_ai.response.model", model)
+        span.set_attribute(
+            "gen_ai.output.messages",
+            _trace_messages([{"role": "assistant", "content": text}]),
+        )
+        span.set_attribute("gen_ai.usage.input_tokens", input_tokens)
+        span.set_attribute("gen_ai.usage.output_tokens", output_tokens)
+        span.set_status(Status(StatusCode.OK))
+        return text, input_tokens, output_tokens
+
+
+def _trace_messages(messages: list[dict[str, str]]) -> str:
+    """Serialize trace messages without exporting content unless opted in."""
+    include_content = os.getenv("AMP_TRACE_CONTENT", "false").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    if include_content:
+        return json.dumps(messages, ensure_ascii=False)
+    return json.dumps(
+        [
+            {"role": str(message.get("role", "user")), "content": "[redacted]"}
+            for message in messages
+        ],
+        ensure_ascii=False,
     )
 
 
